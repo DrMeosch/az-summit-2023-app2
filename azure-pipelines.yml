@@ -1,0 +1,105 @@
+parameters:
+- name: is_building
+  displayName: Run Build
+  type: boolean
+  default: true
+
+trigger:
+  branches:
+      include:
+      - master
+  paths:
+    exclude:
+      - azure-pipelines.yml
+
+resources:
+  repositories:
+  - repository: templates
+    type: github
+    endpoint: 'srvConnGitHub'
+    name: DrMeosch/az-summit-2023-templates
+    ref: refs/heads/master
+
+  - repository: configurations
+    type: github
+    endpoint: 'srvConnGitHub'
+    name: DrMeosch/az-summit-2023-configurations
+    ref: refs/heads/master
+  pipelines:
+    - pipeline: package
+      source: az-summit-2023-app2
+
+variables:
+  - name: MajorMinorVersion
+    value: '2.4'
+  - name: solution
+    value: '**/*.sln'
+  - name: buildPlatform
+    value: 'Any CPU'
+  - name: buildConfiguration
+    value: 'Release'
+  - ${{ if or(eq(parameters.is_building, 'true'), eq(variables['Build.Reason'], 'BatchedCI'), eq(variables['Build.Reason'], 'IndividualCI'), eq(variables['Build.Reason'], 'PullRequest')) }}:
+    - name: is_building
+      value: true
+    - name: Revision
+      value: $[counter(variables['MajorMinorVersion'], 0)]
+    - name: pipeline_name
+      value: Build-$(MajorMinorVersion).$(Revision)
+
+  # same but for release runs
+  - ${{ if and(ne(parameters.is_building, 'true'), eq(variables['Build.Reason'], 'Manual')) }}:
+    - name: is_building
+      value: false
+    - name: Release
+      value: $[counter(variables['Build.DefinitionName'], 0)]
+    - name: pipeline_name
+      value: Release-$(Release)
+
+name: ${{ variables.pipeline_name }}
+stages:
+
+- stage: Build
+  condition: eq(variables.is_building, 'true')
+  jobs:
+
+  - job: Build
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+
+    - task: NuGetToolInstaller@1
+
+    - task: NuGetCommand@2
+      inputs:
+        restoreSolution: '$(solution)'
+
+    # https://stackoverflow.com/questions/75548945/the-output-option-isnt-supported-when-building-a-solution
+    - powershell: dotnet publish -c Release --property PublishDir=$(Pipeline.Workspace)\a
+      workingDirectory: $(Pipeline.Workspace)\s\src
+
+    - powershell: echo $(MajorMinorVersion).$(Revision) > $(Pipeline.Workspace)\a\version.txt
+
+    - task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: '$(Pipeline.Workspace)\a' # string. Alias: path. Required. File or directory path. Default: $(Pipeline.Workspace).
+        publishLocation: 'pipeline'
+        artifact: drop
+
+    - task: tagBuildOrRelease@0
+      inputs:
+        type: 'Build'
+        tags: |
+          build
+          version: $(MajorMinorVersion).$(Revision)
+
+
+- template: pipelines/az-summit-2023-app2/main-pipeline.yml@templates
+  parameters:
+    environments:
+    - Acceptance
+    - DevAdvance
+    - Integration
+    - Production
+    - Education
+    # environments_autodeploy:
+    #  - DevAdvance
